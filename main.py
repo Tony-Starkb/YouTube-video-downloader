@@ -1,60 +1,83 @@
-from check_pendrive import check_drives
-from app import download_from_channels
+"""
+main.py — Entry point for YouTube Auto-Downloader
+─────────────────────────────────────────────────
+How it works:
+  1. System starts and records all currently connected drives.
+  2. Monitors for any new drive (pendrive) being plugged in.
+  3. On detection → downloads latest videos from configured channels.
+  4. Moves downloaded videos to the pendrive.
+  5. Returns to monitoring state.
+
+To run:
+  python main.py
+
+To configure channels or settings:
+  Edit config.py — no other file needs to be touched.
+"""
+
 import time
-import shutil
-from pathlib import Path
+import sys
+from drive_monitor import get_active_drives, detect_new_drives
+from downloader import download_from_channels
+from transfer import transfer_to_pendrive
+from config import POLL_INTERVAL_SECONDS
+from logger import logger
 
-# Folder where videos are downloaded on laptop
 
-LOCAL_DOWNLOAD_PATH = Path.home() / "Videos" / "Downloaded"
+def run() -> None:
+    """
+    Main loop — monitors for pendrive insertion and triggers
+    the download + transfer pipeline when a new drive is detected.
+    """
+    logger.info("=" * 50)
+    logger.info("  YouTube Auto-Downloader — Started")
+    logger.info("=" * 50)
 
-# Ensure local download folder exists
+    # Record drives that are already connected at startup
+    known_drives = get_active_drives()
 
-LOCAL_DOWNLOAD_PATH.mkdir(parents=True, exist_ok=True)
+    if known_drives:
+        logger.info(f"Existing drives found: {', '.join(known_drives)}")
+    else:
+        logger.info("No external drives currently connected.")
 
-print("Detecting existing drives...")
-known_drives = check_drives()
+    logger.info("Monitoring for pendrive insertion... (Press Ctrl+C to stop)")
+    logger.info("-" * 50)
 
-print("Monitoring for pendrive insertion...")
+    try:
+        while True:
+            new_drives, current_drives = detect_new_drives(known_drives)
 
-while True:
-    current_drives = check_drives()
+            if new_drives:
+                pendrive = list(new_drives)[0]
+                logger.info(f"Pendrive detected at: {pendrive}")
+                logger.info("-" * 50)
 
-    
-    # Detect new drives
-    new_drives = [d for d in current_drives if d not in known_drives]
+                # Step 1 — Download videos from YouTube channels
+                download_success = download_from_channels()
 
-    if new_drives:
-        pendrive = new_drives[0]
-        print(f"Pendrive connected: {pendrive}")
+                if download_success:
+                    # Step 2 — Transfer downloaded videos to pendrive
+                    transfer_to_pendrive(pendrive)
+                else:
+                    logger.error("Download step failed. Skipping transfer.")
 
-        # Step 1 — Download videos to laptop
-        print("Downloading latest videos...")
-        download_from_channels()
+                logger.info("-" * 50)
+                logger.info("Process complete. Monitoring for next pendrive...")
 
-        # Step 2 — Prepare pendrive folder
-        pendrive_path = Path(pendrive) / "Movies"
-        pendrive_path.mkdir(parents=True, exist_ok=True)
+                # Update known drives so we don't re-trigger on same drive
+                known_drives = current_drives.copy()
 
-        print("Moving videos to pendrive...")
+            time.sleep(POLL_INTERVAL_SECONDS)
 
-        # Step 3 — Move downloaded files
-        for item in LOCAL_DOWNLOAD_PATH.rglob("*"):
-            if item.is_file():
-                relative_path = item.relative_to(LOCAL_DOWNLOAD_PATH)
-                dest = pendrive_path / relative_path
+    except KeyboardInterrupt:
+        logger.info("Shutdown requested by user. Exiting cleanly.")
+        sys.exit(0)
 
-                dest.parent.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        logger.error(f"Unexpected error in main loop: {e}")
+        sys.exit(1)
 
-                try:
-                    shutil.move(str(item), str(dest))
-                except Exception as e:
-                    print(f"Error moving {item}: {e}")
 
-        print("Videos successfully moved to pendrive")
-
-        # Update known drives
-        known_drives = current_drives.copy()
-
-    time.sleep(2)
-    
+if __name__ == "__main__":
+    run()
